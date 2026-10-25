@@ -2,7 +2,9 @@
 
 # github-push-via-api
 
-用 GitHub REST API 重建本地 git 提交历史 —— 同样的 commit、作者与 SHA。
+当 `git push` 无法连接 `github.com:443`，但 `api.github.com` 仍可访问时，通过 GitHub Git Data API 上传已有的本地 Git 提交历史。
+
+这是受限网络环境下的备用方案；普通环境优先使用 `git push`。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
@@ -15,119 +17,124 @@
 
 ---
 
-`git push` 需要 `github.com:443` 走 git 的 smart-HTTP 协议。在代理、防火墙或沙箱环境里，这个域名经常不通，而 `api.github.com` 通常可以访问。
+## 什么时候使用
 
-这个仓库提供一个 agent skill 和一个零依赖的 Node 脚本，用 Git Data API 完成同样的事：
+适用于以下场景：
 
-```
-POST /git/blobs  →  POST /git/trees  →  POST /git/commits  →  PATCH /git/refs
-```
+- `git push` 因代理、防火墙、沙箱或网络策略无法连接 `github.com:443`；
+- `api.github.com` 可以访问；
+- 本地已经有需要上传的 Git 提交历史；
+- 需要尽量保留原有提交的父子关系、作者、时间和 message。
 
-GitHub 计算对象 SHA-1 的方式与 git 一致，所以同样的内容会得到同样的 commit ID。不修改作者的情况下，远端 head 的 SHA 与本地相同。
+如果普通的 `git push` 可用，请继续使用它。这个工具不替代常规 Git 传输。
 
-## 示例
+## 快速开始
 
-以下是本仓库对自己的空跑输出：
+脚本无第三方依赖，需要 Node.js 18+ 和 Git。远端仓库需要已经存在。
 
-```console
-$ REPO_DIR=. REPO_SLUG=me/my-project node scripts/push-via-api.mjs --dry-run
-branch main already exists -> no init needed
+先空跑，确认本地范围、对象数量、Token 和远端分支：
 
-repo dir  : /home/me/src/my-project
-target    : me/my-project  (branch main)
-mode      : DRY-RUN (no writes)
-
-commits   : 8
-trees     : 13
-blobs     : 20
-blob data : 130.7 KiB
-largest   : 17.1 KiB (f181dc13)
-
-DRY-RUN ready - no writes sent. Would perform:
-  1. POST /repos/me/my-project/git/blobs   x20
-  2. POST /repos/me/my-project/git/trees   x13
-  3. POST /repos/me/my-project/git/commits x8
-  4. POST /repos/me/my-project/git/refs    refs/heads/main
+```bash
+REPO_DIR=/path/to/repo REPO_SLUG=owner/repo BRANCH=main node scripts/push-via-api.mjs --dry-run
 ```
 
-实际推送结束后会打印两边的 head：
+确认空跑结果后再推送：
 
+```bash
+REPO_DIR=/path/to/repo REPO_SLUG=owner/repo BRANCH=main node scripts/push-via-api.mjs
 ```
-local  HEAD : 8f2c1d4e9a7b3f05c6d18e2a4b70935f1c8d6e2a
-remote HEAD : 8f2c1d4e9a7b3f05c6d18e2a4b70935f1c8d6e2a
+
+推送结束后，脚本会打印本地和远端 HEAD，并比较两者的 SHA：
+
+```text
+local  HEAD : <sha>
+remote HEAD : <sha>
 SHAs match  : true
 ```
 
-## 安装
+## Token 和配置
 
-脚本零依赖，Node 18 及以上即可运行：
+Token 只存在于进程内存中，不会写入磁盘。脚本按以下顺序读取 Token：
 
-```bash
-git clone https://github.com/tianyao2003/github-push-via-api
-```
+1. `GITHUB_TOKEN`
+2. `gh auth token`
+3. GitHub CLI 的 `hosts.yml`
 
-作为 agent skill 使用时，把 `SKILL.md` 放进所用 runtime 的 skills 目录，或让 agent 直接读取本仓库完成安装。
-
-## 使用
-
-```bash
-# 空跑：读取本地仓库，不发出写请求
-REPO_DIR=/path/to/repo REPO_SLUG=owner/repo node scripts/push-via-api.mjs --dry-run
-
-# 推送
-REPO_DIR=/path/to/repo REPO_SLUG=owner/repo node scripts/push-via-api.mjs
-```
+经典 Token 通常需要 `repo` 权限；如果提交历史涉及 `.github/workflows/`，还需要 `workflow` 权限。细粒度 Token 需要目标仓库的 Contents 写权限。
 
 | 环境变量 | 说明 |
 | --- | --- |
 | `REPO_DIR` | 本地仓库路径，默认为当前目录 |
 | `REPO_SLUG` | GitHub 上的 `owner/repo`，必填 |
-| `BRANCH` | 要指向的分支，默认 `main` |
-| `REWRITE_AUTHOR` | `"Name <email>"`，用于改写全部提交的作者 |
-| `GIT_EXE` | git 的绝对路径，自动探测失败时使用 |
-| `GITHUB_TOKEN` | token；缺省时依次读取 `gh auth token` 和 GitHub CLI 的 `hosts.yml` |
-| `FORCE` | 设为 `1` 时允许覆盖远端存在本地历史之外提交的分支 |
+| `BRANCH` | 远端目标分支，默认 `main`；本地也必须能解析该 ref |
+| `REWRITE_AUTHOR` | `"Name <email>"`；会同时改写每个 commit 的 author 和 committer |
+| `GIT_EXE` | Git 自动探测失败时使用的绝对路径 |
+| `GITHUB_TOKEN` | 显式提供的 GitHub Token |
+| `FORCE` | 设为 `1` 才允许覆盖包含本地历史之外提交的远端分支 |
 
-token 只存在于进程内存中，不写入磁盘。需要 `repo` 权限；如果历史里包含 `.github/workflows/`，还需要 `workflow` 权限。
+## 安全边界
 
-最后一步会强制更新分支。如果远端分支上有本地历史之外的提交，脚本会打印两边的 head 并以退出码 2 结束；设置 `FORCE=1` 才会继续。
+脚本最后会强制更新远端分支。若远端分支包含本地历史之外的提交，脚本会打印两边的 HEAD，并以退出码 2 停止。
+
+只有确认远端提交可以被替换时，才设置：
+
+```bash
+FORCE=1 REPO_DIR=/path/to/repo REPO_SLUG=owner/repo node scripts/push-via-api.mjs
+```
+
+上传过程中可能先创建 GitHub 对象，再在最后一步更新 ref。中途失败时可能留下未被分支引用的对象；重新执行前应先确认远端分支状态。
+
+## SHA 保留范围
+
+GitHub 使用与 Git 相同的对象哈希算法。对于当前脚本支持的普通、未签名 commit，在不设置 `REWRITE_AUTHOR` 且提交元数据可完整重建时，远端 HEAD 通常可以与本地保持相同 SHA。
+
+以下情况当前版本不保证 SHA 一致：
+
+- 使用非整点时区的提交；
+- 带 `gpgsig`、`mergetag` 或其他额外 commit header 的提交；
+- 需要改写 author 或 committer 的提交。
+
+脚本会在结束时比较 HEAD SHA；如果不一致，应把结果视为需要进一步检查，而不是默认认为上传完全等价。
+
+## 当前限制
+
+- 只重建 commit、tree、blob 和 branch ref；
+- submodule、Git LFS 对象、tag、release 资产不在范围内；
+- 单个 blob 受 GitHub 100 MB 限制，另有常规 API 限流；
+- `BRANCH` 需要能在本地仓库中解析；
+- 远端仓库需要已经存在；创建仓库属于单独的准备步骤；
+- `REWRITE_AUTHOR` 会改变 commit SHA，这是预期行为。
 
 ## 工作原理
 
-1. 读取本地仓库：用 `git rev-list` 取提交列表，再按层遍历每个 tree 和 blob，通过 `git cat-file --batch` 批量读取。
-2. 在 GitHub 上重建对象：先 blobs，再按深度自底向上建 trees，最后按顺序建 commits，保留原有的父提交、作者、提交者、时间与 message。
-3. 把分支指向新的 head。
-4. 比对远端与本地 head 的 SHA。
+1. 使用 `git rev-list` 读取提交顺序，用 `git cat-file --batch` 批量读取 tree 和 blob。
+2. 通过 Git Data API 依次创建 blob、按层创建 tree、按提交顺序创建 commit。
+3. 把目标分支指向新的 head。
+4. 比较本地和远端 HEAD SHA。
 
-## 已知问题
+详细的网络诊断、Token 权限判断、404/422、Windows `EBUSY` 和验证流程见 [SKILL.md](SKILL.md)。
 
-实测状态码和完整判断流程见 [`SKILL.md`](SKILL.md)。
+## 安装
 
-| 现象 | 原因 |
-| --- | --- |
-| ref 写入返回 `404` | token 缺 `workflow` 权限，且推送范围涉及 `.github/workflows/`。GraphQL 会返回真实原因。 |
-| ref 写入返回 `422` | ref 已存在。脚本对任何非 2xx 都回退到 `PATCH`。 |
-| `spawnSync git EBUSY` | Windows 受限沙箱下观测到。脚本用绝对路径 `git.exe`、批量读对象并退避重试。 |
-| 正则里的 `\s` 被吃掉 | shell heredoc 与 `node -e` 会处理反斜杠，写成 `.mjs` 文件执行。 |
-| 删除仓库返回 `403` | `repo` 权限不含删除仓库，需要 `delete_repo`。 |
+```bash
+git clone https://github.com/tianyao2003/github-push-via-api
+```
 
-## 边界
-
-- 重建的是 commit 和 ref；submodule、LFS、tag 与 release 资产不在范围内。
-- 单文件上限 100 MB，另有常规 API 限流。脚本会打印 API 调用次数。
-- fine-grained token 不返回 `x-oauth-scopes` 头，权限通过调用接口判断。
+作为 Agent Skill 使用时，把 `SKILL.md` 放进所用 runtime 的 skills 目录，或让 Agent 直接读取本仓库。
 
 ## 仓库结构
 
-```
+```text
 github-push-via-api/
-├── SKILL.md                    # agent skill：判断流程、token 权限探测、失败模式
-├── README.md                   # 中文
-├── README_EN.md                # English
+├── SKILL.md                    # Agent Skill：判断流程、权限和故障排查
+├── README.md                   # 中文说明
+├── README_EN.md                # English documentation
 └── scripts/
-    └── push-via-api.mjs        # 实现
+    └── push-via-api.mjs        # 零依赖 Node.js 实现
 ```
 
 ## License
 
 MIT
+
+
