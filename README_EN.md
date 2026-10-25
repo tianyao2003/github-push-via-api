@@ -27,24 +27,26 @@ GitHub computes object SHA-1 exactly the way git does, so identical content yiel
 
 ## Example
 
+The dry-run below is this repository's own output:
+
 ```console
-$ REPO_DIR=~/src/my-project REPO_SLUG=me/my-project node scripts/push-via-api.mjs --dry-run
-branch main not present -> DRY-RUN would initialise the repo first
+$ REPO_DIR=. REPO_SLUG=me/my-project node scripts/push-via-api.mjs --dry-run
+branch main already exists -> no init needed
 
 repo dir  : /home/me/src/my-project
 target    : me/my-project  (branch main)
 mode      : DRY-RUN (no writes)
 
-commits   : 42
-trees     : 118
-blobs     : 396
-blob data : 2.1 MiB
-largest   : 184.2 KiB (7f3a91c2)
+commits   : 8
+trees     : 13
+blobs     : 20
+blob data : 130.7 KiB
+largest   : 17.1 KiB (f181dc13)
 
 DRY-RUN ready - no writes sent. Would perform:
-  1. POST /repos/me/my-project/git/blobs   x396
-  2. POST /repos/me/my-project/git/trees   x118
-  3. POST /repos/me/my-project/git/commits x42
+  1. POST /repos/me/my-project/git/blobs   x20
+  2. POST /repos/me/my-project/git/trees   x13
+  3. POST /repos/me/my-project/git/commits x8
   4. POST /repos/me/my-project/git/refs    refs/heads/main
 ```
 
