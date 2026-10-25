@@ -1,24 +1,24 @@
 #!/usr/bin/env node
 /**
- * push-via-api.mjs —— 用 GitHub Git Data API 推送本地 git 历史。
+ * push-via-api.mjs — rebuild a local git history on GitHub via the Git Data API.
  *
- * 为什么需要它：本机网络出口只放行 api.github.com / codeload.github.com，
- * github.com:443 被代理拦截，`git push` 走不通。
- * Git Data API 全部挂在 api.github.com 上，可原样重建 blob/tree/commit。
+ * Why: when egress allows api.github.com but blocks github.com:443, `git push`
+ * cannot work. The Git Data API lives entirely on api.github.com and can
+ * rebuild blob/tree/commit objects verbatim.
  *
- * 用法：
+ * Usage:
  *   node push-via-api.mjs --dry-run
  *   node push-via-api.mjs
  *
- * 环境变量：
- *   REPO_DIR       本地仓库路径
+ * Environment:
+ *   REPO_DIR       local repository path
  *   REPO_SLUG      owner/repo
- *   BRANCH         默认 main
- *   REWRITE_AUTHOR 形如 "Name <email>"，设了就把所有提交作者换成它
- *   GIT_EXE        git 绝对路径（Windows 上必需）
+ *   BRANCH         default: main
+ *   REWRITE_AUTHOR "Name <email>" - rewrite every commit author
+ *   GIT_EXE        absolute path to git (required on Windows)
  */
 import { execSync } from 'node:child_process'
-import { readFileSync, writeFileSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, unlinkSync, statSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -38,6 +38,7 @@ Environment:
   REWRITE_AUTHOR  "Name <email>" — rewrite every commit author
   GIT_EXE         absolute path to git (auto-detected)
   GITHUB_TOKEN    token; falls back to \`gh auth token\`, then the gh hosts.yml
+  FORCE=1         allow overwriting remote commits that are not in local history
 
 The token needs the \`repo\` scope, plus \`workflow\` if the history touches
 .github/workflows/. Missing \`workflow\` surfaces as a bare 404 on the ref write.`)
@@ -52,8 +53,8 @@ if (!SLUG || !SLUG.includes('/')) {
 }
 const BRANCH = process.env.BRANCH || 'main'
 const REWRITE_AUTHOR = process.env.REWRITE_AUTHOR || ''
-// Windows 上 spawnSync 直接调 "git" 会 EBUSY，所以先解析出一个绝对路径。
-// 优先级：GIT_EXE 环境变量 -> where/command -v -> 裸 "git" 兜底。
+// On Windows, spawning "git" directly can fail with EBUSY, so resolve an absolute
+// path first: GIT_EXE -> where/command -v -> bare "git" as a fallback.
 function resolveGit() {
   if (process.env.GIT_EXE) return process.env.GIT_EXE
   const finder = process.platform === 'win32' ? 'where git' : 'command -v git'
@@ -94,9 +95,9 @@ const H = {
   'Content-Type': 'application/json',
 }
 
-// ---------- git 批量读取 ----------
-// Windows 上 spawnSync 直接调 "git" 会 EBUSY；连续 spawn 也会 EBUSY。
-// 对策：(a) 绝对路径 + shell；(b) 尽量减少 spawn 次数；(c) 失败重试。
+// ---------- batch reads from git ----------
+// Windows: spawning git directly can fail with EBUSY, and so can repeated spawns.
+// Countermeasures: (a) absolute path + shell, (b) fewer spawns, (c) retry.
 const q = (s) => (/[\s"\\]/.test(s) ? '"' + String(s).replace(/"/g, '\\"') + '"' : String(s))
 
 function runShell(cmd, opts = {}) {
@@ -110,7 +111,7 @@ function runShell(cmd, opts = {}) {
         ...opts,
       })
     } catch (e) {
-      // EBUSY / EAGAIN 是 Windows 上瞬时资源争用，重试即可
+      // EBUSY / EAGAIN is transient resource contention on Windows - just retry
       if (e.code === 'EBUSY' || e.code === 'EAGAIN' || e.code === 'UNKNOWN') {
         lastErr = e
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150 * attempt)
@@ -126,12 +127,13 @@ function git(args) {
   return runShell([q(GIT_EXE), ...args.map(q)].join(' '), { encoding: 'utf8' })
 }
 
-/** 一次 git cat-file --batch 读多个对象，返回 Map<sha, {type, buf}> */
+/** Read many objects in one `git cat-file --batch` call -> Map<sha, {type, buf}> */
 function batchRead(shas) {
   if (shas.length === 0) return new Map()
   const listFile = join(tmpdir(), `dsh-shas-${process.pid}-${shas.length}.txt`)
   writeFileSync(listFile, shas.join('\n') + '\n')
   const buf = runShell(`${q(GIT_EXE)} cat-file --batch < ${q(listFile)}`)
+  try { unlinkSync(listFile) } catch { /* best effort */ }
   const out = new Map()
   let p = 0
   while (p < buf.length) {
@@ -143,7 +145,7 @@ function batchRead(shas) {
     const [sha, type, sizeStr] = header.split(' ')
     const size = Number(sizeStr)
     const content = buf.subarray(p, p + size)
-    p += size + 1 // 跳过后面的换行
+    p += size + 1 // skip the trailing newline
     out.set(sha, { type, buf: Buffer.from(content) })
   }
   return out
@@ -162,7 +164,7 @@ function parseIdent(s) {
   return { name, email, date: iso }
 }
 
-/** 解析 commit 对象 */
+/** Parse a commit object */
 function parseCommit(sha, buf) {
   const raw = buf.toString('utf8')
   const idx = raw.indexOf('\n\n')
@@ -178,7 +180,7 @@ function parseCommit(sha, buf) {
   return c
 }
 
-/** 解析 tree 对象（二进制）: "<mode> <name>\0<20 bytes sha>" */
+/** Parse a tree object (binary): "<mode> <name>\0<20-byte sha>" */
 function parseTree(buf) {
   const entries = []
   let p = 0
@@ -224,10 +226,10 @@ async function api(path, init = {}) {
   }
 }
 
-// ---------- 0. 仓库必须非空 ----------
-// GitHub 对完全空的仓库拒绝 /git/blobs（409 "Git Repository is empty"）。
-// 先用一个临时提交把仓库初始化出来，最后再把 ref 指到真正的历史，
-// 这个临时提交会变成不可达对象（GitHub 侧自然回收）。
+// ---------- 0. the repo must not be empty ----------
+// GitHub rejects /git/blobs on a completely empty repo (409 "Git Repository is empty").
+// Bootstrap it with one throwaway commit, then point the ref at the real history;
+// the throwaway commit becomes unreachable and GitHub eventually collects it.
 async function rawFetch(path, init = {}) {
   const res = await fetch('https://api.github.com' + path, { ...init, headers: { ...H, ...(init.headers || {}) } })
   const text = await res.text()
@@ -238,6 +240,10 @@ async function rawFetch(path, init = {}) {
 
 const branchProbe = await rawFetch(`/repos/${SLUG}/git/ref/heads/${BRANCH}`)
 let needInit = branchProbe.status !== 200
+// Remember where the remote branch pointed before we touch it. The final ref update
+// force-overwrites that branch, so we must be able to tell whether it would discard
+// commits that are not part of this local history.
+const remoteHeadBefore = needInit ? null : (branchProbe.body && branchProbe.body.object && branchProbe.body.object.sha) || null
 
 if (needInit) {
   if (DRY) {
@@ -264,7 +270,7 @@ if (needInit) {
 }
 console.log()
 
-// ---------- 采集 ----------
+// ---------- collect local objects ----------
 console.log(`repo dir  : ${REPO_DIR}`)
 console.log(`target    : ${SLUG}  (branch ${BRANCH})`)
 console.log(`mode      : ${DRY ? 'DRY-RUN (no writes)' : 'LIVE'}`)
@@ -277,7 +283,7 @@ console.log(`commits   : ${commitShas.length}`)
 const commitObjs = batchRead(commitShas)
 const commits = commitShas.map((s) => parseCommit(s, commitObjs.get(s).buf))
 
-// 从根树 BFS 出所有子树与 blob（每次 batchRead 一层，spawn 次数极少）
+// BFS from the root trees to every subtree and blob (one batchRead per depth)
 const allTreeShas = new Set()
 const allBlobShas = new Set()
 const treeObjs = new Map()
@@ -312,14 +318,14 @@ for (const [sha, o] of blobObjs) {
 }
 console.log(`blob data : ${(totalBytes / 1024).toFixed(1)} KiB`)
 
-// 预检：GitHub blob API 单文件上限（base64 后约 100MB 限制，实际软上限 ~50MB）
+// Precheck: the blob API has a per-file limit (~100 MB after base64; practical ~50 MB)
 let biggest = { sha: '', len: 0 }
 for (const [sha, o] of blobObjs) if (o.buf.length > biggest.len) biggest = { sha, len: o.buf.length }
 console.log(`largest   : ${(biggest.len / 1024).toFixed(1)} KiB (${biggest.sha.slice(0, 8)})`)
 console.log()
 
 if (DRY) {
-  console.log('DRY-RUN 就绪，未发送任何写请求。将执行：')
+  console.log('DRY-RUN ready - no writes sent. Would perform:')
   console.log(`  1. POST /repos/${SLUG}/git/blobs   x${blobB64.size}`)
   console.log(`  2. POST /repos/${SLUG}/git/trees   x${allTreeShas.size}`)
   console.log(`  3. POST /repos/${SLUG}/git/commits x${commits.length}`)
@@ -341,7 +347,7 @@ for (const [sha, b64] of blobB64) {
 }
 console.log(`  blobs   ${blobMap.size}/${blobMap.size}`)
 
-// ---------- 2. trees（按深度自底向上） ----------
+// ---------- 2. trees (bottom-up by depth) ----------
 const treeMap = new Map()
 const treeDepth = new Map()
 function depthOf(treeSha) {
@@ -399,6 +405,20 @@ for (const c of commits) {
 console.log(`  commits ${commitMap.size}/${commits.length}`)
 
 // ---------- 4. ref ----------
+// The update below force-overwrites the branch. If the remote branch holds a commit
+// that is not in this local history, that update would silently delete remote work,
+// so refuse unless the caller opts in explicitly with FORCE=1.
+const FORCE = process.env.FORCE === '1'
+if (!DRY && remoteHeadBefore && !commitShas.includes(remoteHeadBefore) && !FORCE) {
+  console.error('')
+  console.error('Refusing to overwrite remote history.')
+  console.error('  remote head : ' + remoteHeadBefore)
+  console.error('  local head  : ' + commitShas[commitShas.length - 1])
+  console.error('  That remote commit is not in this local history, so the force update')
+  console.error('  would delete it. Re-run with FORCE=1 if that is really what you want.')
+  process.exit(2)
+}
+
 const localHead = commits[commits.length - 1].sha
 const remoteHead = commitMap.get(localHead)
 console.log()
@@ -406,8 +426,9 @@ console.log('local  HEAD :', localHead)
 console.log('remote HEAD :', remoteHead)
 console.log('SHAs match  :', remoteHead === localHead, rewrite ? '(expected false: author rewritten)' : '')
 
-// 分支可能已被初始化提交占用 -> POST 失败就 PATCH
-// 注意：GitHub 对「已存在的 ref」返回的是 404，不是文档里写的 422。
+// The branch may already exist (bootstrap commit) -> POST fails, fall back to PATCH.
+// With a healthy token an existing ref returns the documented 422, not 404.
+// A 404 here means the token lacks the `workflow` scope - never branch on the code alone.
 let ref = await rawFetch(`/repos/${SLUG}/git/refs`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },

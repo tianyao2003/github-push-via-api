@@ -80,6 +80,12 @@ REPO_DIR=<local repo>  REPO_SLUG=owner/repo  REWRITE_AUTHOR='Name <email>' node 
 The script reads local objects, POSTs blobs → trees (bottom-up) → commits (in
 order, preserving parents), then points the branch at the new head.
 
+The last step force-overwrites the branch. If the remote branch already holds a
+commit that is not in your local history, that update would silently delete
+remote work — so the script refuses with exit code 2 and prints both heads.
+`FORCE=1` is the explicit opt-in. Do not set it to "make the error go away";
+first work out whose commit that is.
+
 **GitHub computes SHA-1 the same way git does, so identical content yields
 identical SHAs.** If `REWRITE_AUTHOR` is unset, the remote head SHA equals the
 local one — a free, decisive correctness check. If it is set, SHAs differ by
