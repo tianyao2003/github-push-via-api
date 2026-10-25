@@ -152,15 +152,25 @@ if (ref.status !== 200 && ref.status !== 201) {
 Do not delete and recreate the default branch: `DELETE /git/refs/heads/main`
 returns `422 "Cannot delete the default branch"`.
 
-### 3. Windows + Node cannot spawn git the obvious way
+### 3. Windows + Node: git spawning can fail with `EBUSY`
+
+Observed under a restricted sandbox:
 
 - `execFileSync('git', args)` → `spawnSync git EBUSY`
 - repeated `execSync` in a loop → `spawnSync C:\Windows\system32\cmd.exe EBUSY`
 
-Three mitigations, all needed: use the **absolute path** to `git.exe` via a
-shell; **minimise spawns** (`git cat-file --batch < shafile` reads many objects
-in one call; walk trees breadth-first, one batch per depth); and **retry** on
-`EBUSY`/`EAGAIN` with a short backoff.
+This is **not universal** — the same code spawned git 30/30 times without error
+on an ordinary Windows session, so treat it as an environment-dependent failure,
+not a rule. Build for it anyway, because the failure is silent-ish (a thrown
+`EBUSY`, no hint about which of the three causes it is):
+
+- use the **absolute path** to `git.exe` via a shell
+- **minimise spawns** (`git cat-file --batch < shafile` reads many objects in one
+  call; walk trees breadth-first, one batch per depth)
+- **retry** on `EBUSY`/`EAGAIN` with a short backoff
+
+If you hit `EBUSY` and cannot explain it, check whether a sandbox is confining the
+process before you redesign the code — that was the actual cause here.
 
 ### 4. Bash heredocs and `node -e` eat backslashes
 

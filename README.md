@@ -78,9 +78,9 @@ The expensive part, and the reason this exists. Full detail in [`SKILL.md`](SKIL
 2. **Never branch on ref-write status codes.** Healthy token: existing ref returns
    the documented `422`. Missing `workflow`: everything ref-related returns `404`,
    so the two traps look identical. Fall back to `PATCH` on any non-2xx.
-3. **Windows + Node can't spawn git the obvious way.** `execFileSync('git')` can
-   fail with `EBUSY`. Use an absolute `git.exe` via a shell, fewer spawns
-   (`git cat-file --batch`), retry with backoff.
+3. **Windows + Node: git spawning can fail with `EBUSY`.** Seen under a
+   sandbox, not on every Windows session — but build for it: absolute `git.exe`
+   via a shell, fewer spawns (`git cat-file --batch`), retry with backoff.
 4. **Shell heredocs and `node -e` eat backslashes.** Write a `.mjs` file instead.
 5. **Deleting a repo needs `delete_repo`.** `repo` doesn't include it, so don't
    create throwaway diagnostic repos you can't clean up.

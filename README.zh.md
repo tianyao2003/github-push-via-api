@@ -59,7 +59,7 @@ token 读取顺序：`GITHUB_TOKEN` → `gh auth token` → GitHub CLI 的 `host
 
 1. **缺 `workflow` 权限时，报的是 `404` 不是 `403`。** 如果推送范围动了 `.github/workflows/`，ref 更新会被拒绝，返回一个光秃秃的 `404`。GraphQL 才说真实原因。修法：去 token 上勾 `workflow` —— 改权限不会改变 token 字符串。
 2. **不要只看 ref 写入的状态码做分支。** token 正常时，ref 已存在返回文档里写的 `422`；缺 `workflow` 权限时，所有 ref 相关操作都返回 `404`，两个坑长得一模一样。任何非 2xx 都直接 fallback 到 `PATCH`。
-3. **Windows 上 Node 不能按常规方式 spawn git。** `execFileSync('git')` 可能 `EBUSY`。走 shell 用 `git.exe` 绝对路径、尽量少 spawn（`git cat-file --batch`）、失败退避重试。
+3. **Windows 上 Node spawn git 可能 `EBUSY`。** 是在沙箱环境下实测到的，不是每台 Windows 都这样 —— 但仍要按这个前提写：走 shell 用 `git.exe` 绝对路径、尽量少 spawn（`git cat-file --batch`）、失败退避重试。
 4. **shell heredoc 和 `node -e` 会吃掉反斜杠。** 写成 `.mjs` 文件再执行。
 5. **删仓库需要 `delete_repo` 权限。** `repo` 不包含它，所以别随手创建清理不掉的临时诊断仓库。
 
