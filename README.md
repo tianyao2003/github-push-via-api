@@ -56,8 +56,6 @@ remote HEAD : 8f2c1d4e9a7b3f05c6d18e2a4b70935f1c8d6e2a
 SHAs match  : true
 ```
 
-两行 SHA 相同，说明历史是逐字节重建的。
-
 ## 安装
 
 脚本零依赖，Node 18 及以上即可运行：
@@ -99,21 +97,23 @@ token 只存在于进程内存中，不写入磁盘。需要 `repo` 权限；如
 3. 把分支指向新的 head。
 4. 比对远端与本地 head 的 SHA。
 
-## 失败模式
+## 已知问题
 
-以下是实际遇到并记录在 [`SKILL.md`](SKILL.md) 中的情况，包含实测状态码与完整的判断流程。
+实测状态码和完整判断流程见 [`SKILL.md`](SKILL.md)。
 
-- **缺少 `workflow` 权限时，ref 更新返回 `404` 而不是 `403`。** 当推送范围涉及 `.github/workflows/` 时会出现。GraphQL 会返回具体原因。在已有 token 上补勾权限不会改变 token 字符串。
-- **ref 写入的状态码存在歧义。** ref 已存在时返回 `422`；token 缺少 `workflow` 时，所有 ref 相关操作都返回 `404`。脚本在任何非 2xx 时回退到 `PATCH`。
-- **在 Windows 上通过 Node 调用 git 可能返回 `EBUSY`。** 在受限沙箱下观测到。脚本通过 shell 调用绝对路径的 `git.exe`，批量读取对象，并带退避重试。
-- **shell heredoc 和 `node -e` 会处理掉反斜杠。** 含 `\s`、`\S`、`\/` 的正则会被破坏，写成 `.mjs` 文件执行即可。
-- **删除仓库需要 `delete_repo` 权限。** `repo` 权限不包含删除仓库。
+| 现象 | 原因 |
+| --- | --- |
+| ref 写入返回 `404` | token 缺 `workflow` 权限，且推送范围涉及 `.github/workflows/`。GraphQL 会返回真实原因。 |
+| ref 写入返回 `422` | ref 已存在。脚本对任何非 2xx 都回退到 `PATCH`。 |
+| `spawnSync git EBUSY` | Windows 受限沙箱下观测到。脚本用绝对路径 `git.exe`、批量读对象并退避重试。 |
+| 正则里的 `\s` 被吃掉 | shell heredoc 与 `node -e` 会处理反斜杠，写成 `.mjs` 文件执行。 |
+| 删除仓库返回 `403` | `repo` 权限不含删除仓库，需要 `delete_repo`。 |
 
 ## 边界
 
-- 重建的是 commit 和 ref。submodule、LFS、tag 与 release 资产不在范围内。
+- 重建的是 commit 和 ref；submodule、LFS、tag 与 release 资产不在范围内。
 - 单文件上限 100 MB，另有常规 API 限流。脚本会打印 API 调用次数。
-- fine-grained token 不返回 `x-oauth-scopes` 头，因此通过调用接口来判断权限，而不是读响应头。
+- fine-grained token 不返回 `x-oauth-scopes` 头，权限通过调用接口判断。
 
 ## 仓库结构
 

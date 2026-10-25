@@ -56,8 +56,6 @@ remote HEAD : 8f2c1d4e9a7b3f05c6d18e2a4b70935f1c8d6e2a
 SHAs match  : true
 ```
 
-Matching SHAs mean the history was rebuilt byte for byte.
-
 ## Install
 
 The script has no dependencies and runs on Node 18 or newer:
@@ -99,21 +97,23 @@ The final step force-updates the branch. If the remote branch holds a commit out
 3. Point the branch at the new head.
 4. Compare the remote head SHA against the local one.
 
-## Failure modes
+## Known issues
 
-Recorded in [`SKILL.md`](SKILL.md) with the measured status codes and the full decision procedure.
+Measured status codes and the full decision procedure are in [`SKILL.md`](SKILL.md).
 
-- **A missing `workflow` scope returns `404` rather than `403`.** It appears when the pushed range touches `.github/workflows/`. GraphQL reports the specific reason. Adding the scope to an existing token does not change the token string.
-- **Ref-write status codes are ambiguous.** An existing ref returns `422`; a token missing `workflow` returns `404` for every ref operation. The script falls back to `PATCH` on any non-2xx.
-- **Spawning git from Node on Windows can return `EBUSY`.** Observed under a restricted sandbox. The script calls an absolute `git.exe` through a shell, batches object reads, and retries with backoff.
-- **Shell heredocs and `node -e` consume backslashes.** Regexes containing `\s`, `\S` or `\/` break; write a `.mjs` file and run it.
-- **Deleting a repository needs `delete_repo`.** The `repo` scope does not include it.
+| Symptom | Cause |
+| --- | --- |
+| Ref write returns `404` | The token lacks `workflow` and the pushed range touches `.github/workflows/`. GraphQL reports the real reason. |
+| Ref write returns `422` | The ref already exists. The script falls back to `PATCH` on any non-2xx. |
+| `spawnSync git EBUSY` | Observed under a Windows restricted sandbox. The script uses an absolute `git.exe`, batches object reads and retries with backoff. |
+| `\s` disappears from a regex | Shell heredocs and `node -e` consume backslashes; write a `.mjs` file and run it. |
+| Deleting a repo returns `403` | The `repo` scope does not cover deletion; `delete_repo` is required. |
 
 ## Limits
 
-- Rebuilds commits and refs. Submodules, LFS, tags and release assets are out of scope.
+- Rebuilds commits and refs; submodules, LFS, tags and release assets are out of scope.
 - Per-blob limit is 100 MB, plus the normal API rate limits. The script prints its API call count.
-- Fine-grained tokens send no `x-oauth-scopes` header, so capability is probed by calling an endpoint rather than reading headers.
+- Fine-grained tokens send no `x-oauth-scopes` header, so capability is probed by calling an endpoint.
 
 ## Repository structure
 
