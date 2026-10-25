@@ -2,7 +2,9 @@
 
 # github-push-via-api
 
-Rebuild a local git history on GitHub through the REST Git Data API — same commits, same authors, same SHAs.
+When `git push` cannot reach `github.com:443` but `api.github.com` is reachable, upload existing local Git history through the GitHub Git Data API.
+
+This is a fallback for restricted networks. Use regular `git push` when it works.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
@@ -15,52 +17,104 @@ Rebuild a local git history on GitHub through the REST Git Data API — same com
 
 ---
 
-`git push` needs `github.com:443` speaking git's smart-HTTP protocol. In proxied, firewalled or sandboxed environments that host is often unreachable, while `api.github.com` usually is.
+## When to use it
 
-This repository contains an agent skill and a zero-dependency Node script that do the same job over the Git Data API:
+This tool is for cases where:
 
-```
-POST /git/blobs  →  POST /git/trees  →  POST /git/commits  →  PATCH /git/refs
-```
+- `git push` cannot reach `github.com:443` because of a proxy, firewall, sandbox, or network policy;
+- `api.github.com` is reachable;
+- the local repository already contains the Git history to upload;
+- you want to preserve the original parent relationships, authors, dates, and messages as far as the current implementation allows.
 
-GitHub computes object SHA-1 exactly the way git does, so identical content yields identical commit IDs. With the author untouched, the remote head SHA matches the local one.
+If regular `git push` works, use it. This tool is a fallback for Git transport restrictions.
 
-## Example
+## Quick start
 
-The dry-run below is this repository's own output:
+The script has no third-party dependencies. It requires Node.js 18+ and Git. The destination repository must already exist.
 
-```console
-$ REPO_DIR=. REPO_SLUG=me/my-project node scripts/push-via-api.mjs --dry-run
-branch main already exists -> no init needed
+Run a dry run first to inspect the local range, object counts, token, and target branch:
 
-repo dir  : /home/me/src/my-project
-target    : me/my-project  (branch main)
-mode      : DRY-RUN (no writes)
-
-commits   : 8
-trees     : 13
-blobs     : 20
-blob data : 130.7 KiB
-largest   : 17.1 KiB (f181dc13)
-
-DRY-RUN ready - no writes sent. Would perform:
-  1. POST /repos/me/my-project/git/blobs   x20
-  2. POST /repos/me/my-project/git/trees   x13
-  3. POST /repos/me/my-project/git/commits x8
-  4. POST /repos/me/my-project/git/refs    refs/heads/main
+```bash
+REPO_DIR=/path/to/repo REPO_SLUG=owner/repo BRANCH=main node scripts/push-via-api.mjs --dry-run
 ```
 
-A live push ends by printing both heads:
+After reviewing the dry run, push the history:
 
+```bash
+REPO_DIR=/path/to/repo REPO_SLUG=owner/repo BRANCH=main node scripts/push-via-api.mjs
 ```
-local  HEAD : 8f2c1d4e9a7b3f05c6d18e2a4b70935f1c8d6e2a
-remote HEAD : 8f2c1d4e9a7b3f05c6d18e2a4b70935f1c8d6e2a
+
+At the end, the script prints both heads and compares their SHAs:
+
+```text
+local  HEAD : <sha>
+remote HEAD : <sha>
 SHAs match  : true
 ```
 
-## Install
+## Token and configuration
 
-The script has no dependencies and runs on Node 18 or newer:
+The token stays in process memory and is never written to disk. The script looks for it in this order:
+
+1. `GITHUB_TOKEN`
+2. `gh auth token`
+3. the GitHub CLI `hosts.yml`
+
+A classic token usually needs the `repo` scope. If the history touches `.github/workflows/`, it also needs the `workflow` scope. A fine-grained token needs Contents write access to the destination repository.
+
+| Variable | Meaning |
+| --- | --- |
+| `REPO_DIR` | Local repository; defaults to the current directory |
+| `REPO_SLUG` | GitHub `owner/repo`; required |
+| `BRANCH` | Remote target branch; defaults to `main`. The same ref must resolve locally |
+| `REWRITE_AUTHOR` | `"Name <email>"`; rewrites both author and committer on every commit |
+| `GIT_EXE` | Absolute Git path used when auto-detection fails |
+| `GITHUB_TOKEN` | Explicit GitHub token |
+| `FORCE` | Set to `1` to overwrite a remote branch containing commits outside local history |
+
+## Safety boundary
+
+The final step force-updates the remote branch. If that branch contains a commit outside the local history, the script prints both heads and exits with code 2.
+
+Only set this variable after confirming that replacing the remote history is safe:
+
+```bash
+FORCE=1 REPO_DIR=/path/to/repo REPO_SLUG=owner/repo node scripts/push-via-api.mjs
+```
+
+The script may create GitHub objects before the final ref update. If a run fails midway, orphaned objects may remain; inspect the remote branch before retrying.
+
+## SHA preservation
+
+GitHub uses the same object hashing algorithm as Git. For ordinary unsigned commits supported by the current script, with `REWRITE_AUTHOR` unset and all commit metadata reconstructible, the remote HEAD can usually retain the local SHA.
+
+The current version does not guarantee identical SHAs for:
+
+- commits using non-whole-hour time zones;
+- commits with `gpgsig`, `mergetag`, or other extra commit headers;
+- commits whose author or committer is rewritten.
+
+The script compares the local and remote HEAD at the end. If they differ, treat the result as needing further inspection rather than assuming the histories are fully equivalent.
+
+## Current limits
+
+- Rebuilds commits, trees, blobs, and branch refs only;
+- submodules, Git LFS objects, tags, and release assets are out of scope;
+- each blob is subject to GitHub's 100 MB limit and normal API rate limits;
+- `BRANCH` must resolve in the local repository;
+- the destination repository must already exist; repository creation is a separate preparation step;
+- `REWRITE_AUTHOR` changes commit SHAs by design.
+
+## How it works
+
+1. Read commit order with `git rev-list` and batch-read trees and blobs with `git cat-file --batch`.
+2. Create blobs, trees by depth, and commits in order through the Git Data API.
+3. Point the target branch at the new head.
+4. Compare the local and remote HEAD SHAs.
+
+For network diagnosis, token capability checks, 404/422 behavior, Windows `EBUSY`, and the full verification procedure, see [SKILL.md](SKILL.md).
+
+## Install
 
 ```bash
 git clone https://github.com/tianyao2003/github-push-via-api
@@ -68,66 +122,19 @@ git clone https://github.com/tianyao2003/github-push-via-api
 
 To use it as an agent skill, copy `SKILL.md` into your runtime's skills directory, or point your agent at this repository.
 
-## Usage
-
-```bash
-# Dry run: reads the local repository, sends no writes
-REPO_DIR=/path/to/repo REPO_SLUG=owner/repo node scripts/push-via-api.mjs --dry-run
-
-# Push
-REPO_DIR=/path/to/repo REPO_SLUG=owner/repo node scripts/push-via-api.mjs
-```
-
-| Variable | Meaning |
-| --- | --- |
-| `REPO_DIR` | Local repository (default: current directory) |
-| `REPO_SLUG` | `owner/repo` on GitHub (required) |
-| `BRANCH` | Branch to point at (default `main`) |
-| `REWRITE_AUTHOR` | `"Name <email>"` to rewrite every commit author |
-| `GIT_EXE` | Absolute path to git, if auto-detection fails |
-| `GITHUB_TOKEN` | Token; falls back to `gh auth token`, then the GitHub CLI `hosts.yml` |
-| `FORCE` | Set to `1` to overwrite a remote branch that has commits outside local history |
-
-The token stays in process memory and is never written to disk. It needs the `repo` scope, plus `workflow` if the history touches `.github/workflows/`.
-
-The final step force-updates the branch. If the remote branch holds a commit outside the local history, the script prints both heads and exits with code 2. `FORCE=1` continues.
-
-## How it works
-
-1. Read the local repository: `git rev-list` for commits, then a breadth-first walk of every tree and blob, batched through `git cat-file --batch`.
-2. Recreate objects on GitHub: blobs first, then trees bottom-up by depth, then commits in order with their original parents, author, committer, dates and messages.
-3. Point the branch at the new head.
-4. Compare the remote head SHA against the local one.
-
-## Known issues
-
-Measured status codes and the full decision procedure are in [`SKILL.md`](SKILL.md).
-
-| Symptom | Cause |
-| --- | --- |
-| Ref write returns `404` | The token lacks `workflow` and the pushed range touches `.github/workflows/`. GraphQL reports the real reason. |
-| Ref write returns `422` | The ref already exists. The script falls back to `PATCH` on any non-2xx. |
-| `spawnSync git EBUSY` | Observed under a Windows restricted sandbox. The script uses an absolute `git.exe`, batches object reads and retries with backoff. |
-| `\s` disappears from a regex | Shell heredocs and `node -e` consume backslashes; write a `.mjs` file and run it. |
-| Deleting a repo returns `403` | The `repo` scope does not cover deletion; `delete_repo` is required. |
-
-## Limits
-
-- Rebuilds commits and refs; submodules, LFS, tags and release assets are out of scope.
-- Per-blob limit is 100 MB, plus the normal API rate limits. The script prints its API call count.
-- Fine-grained tokens send no `x-oauth-scopes` header, so capability is probed by calling an endpoint.
-
 ## Repository structure
 
-```
+```text
 github-push-via-api/
-├── SKILL.md                    # The agent skill: decision procedure, token probing, failure modes
-├── README.md                   # 中文
-├── README_EN.md                # English
+├── SKILL.md                    # Agent skill: decisions, permissions, and troubleshooting
+├── README.md                   # Chinese documentation
+├── README_EN.md                # English documentation
 └── scripts/
-    └── push-via-api.mjs        # The implementation
+    └── push-via-api.mjs        # Zero-dependency Node.js implementation
 ```
 
 ## License
 
 MIT
+
+
