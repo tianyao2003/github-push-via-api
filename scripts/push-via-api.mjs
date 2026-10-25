@@ -25,6 +25,25 @@ import { join } from 'node:path'
 const argv = process.argv.slice(2)
 const DRY = argv.includes('--dry-run')
 
+if (argv.includes('--help') || argv.includes('-h')) {
+  console.log(`push-via-api — rebuild a git commit history on GitHub through the Git Data API
+
+Usage:
+  REPO_DIR=<local repo> REPO_SLUG=owner/repo node push-via-api.mjs [--dry-run]
+
+Environment:
+  REPO_DIR        local git repository (default: cwd)
+  REPO_SLUG       owner/repo (required)
+  BRANCH          branch to point at (default: main)
+  REWRITE_AUTHOR  "Name <email>" — rewrite every commit author
+  GIT_EXE         absolute path to git (auto-detected)
+  GITHUB_TOKEN    token; falls back to \`gh auth token\`, then the gh hosts.yml
+
+The token needs the \`repo\` scope, plus \`workflow\` if the history touches
+.github/workflows/. Missing \`workflow\` surfaces as a bare 404 on the ref write.`)
+  process.exit(0)
+}
+
 const REPO_DIR = process.env.REPO_DIR || process.cwd()
 const SLUG = process.env.REPO_SLUG
 if (!SLUG || !SLUG.includes('/')) {
